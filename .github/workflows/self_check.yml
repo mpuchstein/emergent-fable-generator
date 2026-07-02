@@ -1,0 +1,28 @@
+name: Self-check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  self-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Godot 4.7
+        run: |
+          curl -Lo godot.zip https://github.com/godotengine/godot/releases/download/4.7-stable/Godot_v4.7-stable_linux.x86_64.zip
+          unzip -q godot.zip
+          chmod +x Godot_v4.7-stable_linux.x86_64
+          sudo mv Godot_v4.7-stable_linux.x86_64 /usr/local/bin/godot
+
+      # A fresh checkout has no .godot/ cache, so godot --headless --script
+      # can't see any class_name script until the project has been scanned
+      # once — found this the hard way locally (see REPORT.md). --editor
+      # --quit forces that scan without opening a window.
+      - name: Build the global class_name cache
+        run: godot --headless --editor --quit
+
+      - name: Run self-check
+        run: godot --headless --script res://tests/self_check.gd
