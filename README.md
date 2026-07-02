@@ -44,7 +44,9 @@ godot --headless --path .
 godot --headless --script res://tests/self_check.gd
 ```
 
-Asserts needs stay clamped, the forage economy never goes negative, roster size and generations stay sane through any deaths/successions, every location gets real (bounded) use — the permanent version of a bug a user caught by watching the game for thirty seconds, see [`REPORT.md`](REPORT.md) — and the chronicle produces varied, non-repeating output. A second sub-check drives the death→succession path directly.
+Asserts needs stay clamped, the forage economy never goes negative, roster size and generations stay sane through any deaths/successions, every location gets real (bounded) use — the permanent version of a bug a user caught by watching the game for thirty seconds, see [`REPORT.md`](REPORT.md) — and the chronicle produces varied, non-repeating output. Two sub-checks drive the death→succession path and the lineage-aware moral ("the third Fox in a row to die at the Market") directly, forcing scenarios the natural sim may not produce on its own.
+
+Runs automatically on every push via [GitHub Actions](.github/workflows/self_check.yml).
 
 ## More
 

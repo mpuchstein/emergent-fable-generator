@@ -62,6 +62,7 @@ func _init() -> void:
 	print("self_check OK: %d lines (%d distinct), %d morals, %d deaths over %d ticks" % [lines.size(), unique.size(), morals.size(), counters["deaths"], 1000])
 
 	_check_forced_mortality()
+	_check_lineage_moral()
 	quit()
 
 ## the balanced economy rarely-to-never produces a natural starvation death
@@ -113,3 +114,36 @@ func _check_forced_mortality() -> void:
 	assert(absf(successor.get_relationship(rival.id)) > 0.0) ## reputation inherited, not reset to neutral
 	assert(absf(successor.get_relationship(rival.id)) < 60.0) ## but diluted, not copied verbatim
 	print("forced_mortality_check OK: generation %d -> %d, inherited relationship %.1f" % [victim_generation, successor.generation, successor.get_relationship(rival.id)])
+
+## a death within a single day only ever gets the generic "Die" moral —
+## the lineage-aware moral ("the third Fox in a row to die at the Market")
+## requires the same species dying at the same location across *multiple*
+## deaths, which forces three separate successions in sequence and checks
+## the resulting moral text, not just that a moral fired.
+func _check_lineage_moral() -> void:
+	var world := World.new(12345)
+	var chronicle := Chronicle.new()
+	var species: String = world.agents[0].species
+	var target_location := "Market"
+	var death_count := {"n": 0}
+
+	world.event_happened.connect(func(ev: Dictionary) -> void:
+		if ev["actor"] == species and ev["action"] == "Die":
+			death_count["n"] += 1
+	)
+
+	for death_num in 3:
+		var current: Agent = world.agents.filter(func(a): return a.species == species)[0]
+		current.location = target_location
+		for i in World.STARVATION_LIMIT + 2:
+			current.needs["Hunger"] = 0.0
+			world._process_mortality()
+			if death_count["n"] > death_num:
+				break
+
+	assert(death_count["n"] == 3)
+	var moral := chronicle.synthesize_moral(world._day_events)
+	assert(moral.contains("third"))
+	assert(moral.contains(target_location))
+	assert(not moral.contains(species + "s ")) ## catches "Foxs" instead of "Foxes" — this roster's chosen species is the one irregular case
+	print("lineage_moral_check OK: %s" % moral)

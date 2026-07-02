@@ -145,6 +145,12 @@ func _die_flavor_trait(agent: Agent) -> String:
 			return t
 	return "default"
 
+## species -> {"location": String, "streak": int} — how many of a species'
+## most recent consecutive deaths happened at the same location. This is what
+## lets a moral say "the third Fox in a row to die at the Market" instead of
+## treating every death as an isolated one-day event; see Chronicle.MORALS_LINEAGE.
+var _death_location_streak: Dictionary = {}
+
 ## checks the day's starvation streaks and replaces anyone who's crossed
 ## STARVATION_LIMIT — run after actions resolve so a last-second successful
 ## Forage can still save an agent that tick
@@ -158,10 +164,15 @@ func _process_mortality() -> void:
 		if a.starved_ticks >= STARVATION_LIMIT:
 			died.append(a)
 	for dead in died:
+		var prior: Dictionary = _death_location_streak.get(dead.species, {"location": "", "streak": 0})
+		var streak: int = prior["streak"] + 1 if prior["location"] == dead.location else 1
+		_death_location_streak[dead.species] = {"location": dead.location, "streak": streak}
+
 		var death_event := {
 			"actor": dead.species, "target": "", "location": dead.location, "action": "Die",
 			"outcome": "success", "dominant_trait": _die_flavor_trait(dead),
 			"actor_poss": "their", "relationship_delta": 0.0, "tick": tick_count,
+			"generation": dead.generation, "location_streak": streak,
 		}
 		_day_events.append(death_event)
 		event_happened.emit(death_event)
