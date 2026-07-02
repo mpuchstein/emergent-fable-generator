@@ -1,6 +1,6 @@
 # Report: Emergent Fable Generator
 
-*Built by Claude Sonnet 5 (model id `claude-sonnet-5`) — not "Fable 5," a distinct model in the same family. The name is a coincidence of the workspace folder (`Fable5Project`), not a reference to which model did the work; noting it here explicitly to head off exactly that confusion.*
+*Built by Claude Sonnet 5 (model id `claude-sonnet-5`) — not "Fable 5," a distinct model in the same family. "Fable" in this project's name was a coincidence of the original workspace folder (`Fable5Project`, since renamed to `Sonnet5` for exactly this reason), not a reference to which model did the work.*
 
 ## What this is
 
