@@ -1,0 +1,104 @@
+# Report: Emergent Fable Generator
+
+*Built by Claude Sonnet 5 (model id `claude-sonnet-5`) — not "Fable 5," a distinct model in the same family. The name is a coincidence of the workspace folder (`Fable5Project`), not a reference to which model did the work; noting it here explicitly to head off exactly that confusion.*
+
+## What this is
+
+A small Godot 4.7 simulation (`fable-godot/`) of eight animal-archetype agents — Fox, Owl, Hare, Bear, Crow, Mole, Badger, Wren — living among five locations (Den, Meadow, River, Grove, Market). Each agent has two fixed personality traits, four decaying needs, and a relationship score toward every other agent that slowly drifts back toward neutral if left unattended. A tick loop picks each agent's highest-utility action from a set of eight (Forage, Rest, Socialize, Confront, Share, Steal, Boast, Travel), executes it, and turns the result into a plain-English sentence in a scrolling chronicle. Agents who go too long without eating starve and are replaced by a successor who inherits a diluted share of their reputation — deaths and successions are themselves chronicled events. At the end of each simulated day (~25 ticks), the system scans that day's events for the single most consequential one — a death always wins that scan outright — and writes a one-line "moral." The full day is exported to `chronicles/day_NNN.md`. Those markdown files are the actual deliverable: 28 sample days from a real run are checked into the repo, six of them with a death and succession.
+
+## Why this and not something else
+
+The workspace offered Unity 3D/2D, Godot, and Blender with no assignment attached — the choice was mine. I picked emergent social simulation over the alternatives (procedural terrain, boids, cellular automata, a small roguelike) because it's the one with a real, not-fully-solved design tension behind it — authored story vs. story that falls out of a simulation nobody scripted — and because the project folder's own name ("Fable") pointed at the same idea Aesop had: morals emerging from fixed animal natures under scarcity and conflict. Prior art search turned up [Talk of the Town](https://www.kmjn.org/publications/Neighborly_CoG22-abstract.html) / its successor Neighborly, and Kreminski's ["story sifting"](https://dl.acm.org/doi/10.1145/3723498.3723809) work, which validated the "scan for the notable pattern, don't narrate everything" design already sketched for the moral-synthesis step.
+
+Godot over Unity: this is a data/logic simulation whose interesting output is text, not rendered art. GDScript plus a handful of plain `RefCounted` classes gets to the interesting part (does the emergent text feel alive?) with none of Unity's C# project ceremony for content that's mostly dictionaries and string formatting.
+
+## Architecture
+
+**The simulation lives entirely outside the scene tree.** `Agent`, `World`, `UtilityScorer`, `ActionResolver`, `Chronicle`, and `ChronicleTemplates` are all `extends RefCounted` with `class_name` — no `Node` overhead, and `RefCounted` supports signals in Godot 4, so `World` exposes `event_happened(event: Dictionary)` and `day_ended(day: int, day_events: Array)` without ever touching a scene. This is what makes the headless self-check trivial: `World.new()`, call `.tick()` in a loop, done — no scene instancing, no editor required.
+
+```
+fable-godot/
+  scenes/
+    main.tscn            # Map (5 Marker2D locations) / Agents / TickTimer / UI
+    agent_view.tscn       # colored square + label, instanced once per agent
+  scripts/
+    main.gd                # owns World + TickTimer, spawns views, wires signals, pause/speed controls
+    sim/
+      agent.gd               # id, species, traits, needs (0-100), relationships, location
+      world.gd                # tick(), roster init, location state, decay/regen, signals
+      utility_scorer.gd       # score_action(), is_feasible(), pick_action()
+      action_resolver.gd      # execute(agent, action, world) -> Event dict, for all 8 actions
+      trait_data.gd           # 8 traits, trait->action score weights, fixed species->trait roster
+      location_data.gd        # per-location bonuses (rest/social/boast) + Meadow's forage pool
+                               #   (regen tuned to match aggregate roster Hunger decay — see below)
+    chronicle/
+      chronicle.gd            # event_to_sentence(), synthesize_moral() ("story sifting")
+      templates.gd            # action -> outcome -> trait -> sentence bank, with fallback chain
+    view/
+      agent_view.gd           # Tween-based movement between location slots
+      chronicle_log.gd        # RichTextLabel wrapper: incremental append, markdown export per day
+  tests/
+    self_check.gd            # extends SceneTree; `godot --headless --script res://tests/self_check.gd`
+  chronicles/                 # day_NNN.md exports — the actual output to read
+```
+
+**Views are the only Node-based layer**: `AgentView` (Node2D), `Main` (Node2D root), the RichTextLabel-backed `ChronicleLog`. No autoloads — it's a single-scene app, and an autoload here would just be an unrequested abstraction plus an ordering footgun.
+
+**Utility scoring is plain data, not a strategy-pattern hierarchy**: `TraitData.TRAIT_ACTION_WEIGHTS` is a `trait -> action -> float` dictionary, and `UtilityScorer.score_action()` sums a need-deficit term, a trait term, a relationship term (who's nearby and how the agent feels about them), and an opportunity term (e.g. Meadow's forage pool level), then subtracts a repetition penalty (below). Eight fixed actions and eight fixed traits is a closed set — a per-action class hierarchy would be speculative flexibility for a cast that will never grow at runtime.
+
+**Sentence generation is a fallback chain, not a full matrix**: `ChronicleTemplates.TEMPLATES` is keyed `action -> outcome -> trait`, falling back to `"default"` and then to one hardcoded generic line. A full action × outcome × trait cross-product would be mostly-empty cells; this covers only where trait flavor is actually worth writing.
+
+**Relationships drift, and agents can die.** Two extensions added after the initial build:
+
+- `World._drift_relationships()` nudges every relationship a small fixed amount toward 0 each tick (`RELATIONSHIP_DRIFT`, via `move_toward`). Before this, `adjust_relationship` was a pure ratchet — Confront/Steal could only push affinity down, Share/Socialize could only push it up, nothing ever pulled back. The drift is deliberately slow: a single day's rivalry still dominates that day's behavior; only sustained silence between two agents lets an old grudge or friendship actually fade over many days.
+- `World._process_mortality()` tracks consecutive ticks at zero Hunger per agent (`Agent.starved_ticks`) and, past `STARVATION_LIMIT`, replaces them with a successor (`World._succeed()`) who keeps the same species/traits but fresh needs, a new id, `generation + 1`, and a diluted share (`INHERITANCE_FACTOR = 0.35`) of the dead agent's relationships in both directions — reputation outliving the individual without simply repeating them. Both the death and the succession are ordinary `event_happened` events with their own template bank (`Die`/`Succeed` in `templates.gd`) and moral entries (`Chronicle.MORALS["Die"]`), and `Chronicle.synthesize_moral()` treats any death as automatically the day's most notable event — nothing outranks who didn't survive the day.
+
+## What went wrong, and what that says about utility AI
+
+The self-check passed on the second try and gave false confidence — invariants (needs stay 0-100, pool stays non-negative) were never the hard part. Reading an actual exported day file surfaced three real behavioral bugs that no assertion caught:
+
+1. **Travel oscillation.** "Travel toward the place that helps" was scored with coefficients close to (sometimes exceeding) "do the helpful thing right here," so agents chased a moving target forever instead of ever committing to Forage/Rest/Boast once they arrived. Fixed by scaling travel desirability to a clear fraction of the in-place action's own deficit term (`world.gd`, `_TRAVEL_DESIRABILITY_SCALE`) — travel is now a nudge, not a competing action.
+2. **Frozen failure loops.** Steal's score was driven by the actor's own hunger, with no check that the target had anything worth taking — Fox kept "trying" (and failing) to steal from an already-picked-clean Bear every single tick, forever. Fixed by gating Steal (and, separately, Share) on real feasibility: is there a present agent actually worth targeting, not just a present agent (`utility_scorer.gd`, `action_resolver.gd::_pick_steal_target`).
+3. **Static equilibrium.** Even after both fixes, a deterministic utility function locks onto its optimum and repeats it verbatim forever once needs/relationships hit a steady state — technically correct, narratively dead. Fixed with a small repetition penalty that grows with how long an agent has repeated the same action (`Agent.action_streak`, `UtilityScorer._repetition_penalty`), which lets a recurring rivalry or friendship keep recurring without being a frozen one-line loop.
+
+None of these were visible from the self-check's assertions; all three were visible in one read of a markdown file. That's the actual lesson: for a system whose output is prose, "the invariants hold" and "this is good" are different claims, and only reading the prose checks the second one.
+
+A fourth issue only showed up once the scene was actually run in the editor (via godot-mcp, after the user manually installed the plugin following a blocked attempt on my end to copy it in from an unrelated project — see JOURNAL.md): agents sharing a location rendered exactly on top of each other, invisibly. Fixed with a small deterministic ring offset per agent slot (`main.gd`, `SLOT_RADIUS`). No amount of text-only verification would have caught that.
+
+### A second round: a "0 deaths" reading that was never a measurement
+
+Adding mortality produced its own debugging arc, and it's worth recording in full because the shape of the mistake generalizes beyond this project. First pass: `0 deaths over 1000 ticks` (40 sim days), at every `STARVATION_LIMIT` from 15 to 50, across six different RNG seeds. I read that as "good, death is appropriately rare." It should have read as "identical result regardless of the threshold or the seed is not what a rare-but-real event looks like — that's what a broken measurement looks like."
+
+Forcing the death path directly (to verify the mechanism independent of whether the stochastic sim ever produced it) caught it: a bare `bool` reassigned inside a GDScript lambda is captured *by value*, not by reference — the closure had its own private copy, and the outer flag never moved. The exact same pattern (`deaths += 1` inside a connected-signal lambda) was silently no-op'ing in the main self-check too. Fixed by mutating a `Dictionary` instead of a bare primitive (same reference-type pattern already working correctly for `lines`/`unique`/`morals` right next to the broken counter — which is exactly why it went unnoticed). The true number was 57 deaths in 40 days.
+
+That sent me looking for a real cause, and a throwaway diagnostic script (death disabled, just logging starvation streaks) found it in one read: an agent standing *at the food source* with Hunger locked at 0 for 220+ consecutive ticks. Not bad luck — `world.tick()` iterated agents in a fixed order (dictionary insertion order, always Fox first, always Wren last), so whoever forages first drains the pool before the last agent in line gets a turn, every tick, forever. Fixed with a seeded per-tick shuffle (`World._shuffled`, plain Fisher-Yates — `Array.shuffle()` reads Godot's *global* RNG, which would have silently broken the seed-reproducibility this whole investigation depended on). That helped but didn't solve it: deaths only dropped to the high teens/twenties, because the deeper problem was arithmetic, not fairness — 8 agents losing 1.5 Hunger/tick each is 12/tick of aggregate demand against a Meadow that only regenerated 3/tick, a quarter of what the population needed to merely stand still. Tripled `forage_regen` (3.0 → 11.0) to roughly match aggregate decay; deaths settled to 2–3 per 40 days.
+
+Three real bugs, found in sequence, each hidden behind the previous one looking "clean." The generalizable lesson: a suspiciously uniform result (same outcome across every threshold, every seed) is a reason to look harder, not a reason to stop.
+
+### A third round: caught by the user, not by any of my own checks
+
+Told the mortality work was verified and settled, the user asked a plain question from actually watching the game run: *"most of the agents just stay at the Meadow and are not moving anywhere — am I wrong?"* They weren't. A quick headless diagnostic (tally agent-location per tick over 500 ticks) confirmed it precisely: 86.2% of all agent-time at the Meadow, Grove visited 0% — never once in 500 ticks. None of my own verification had caught this, because I'd been reading chronicle text for narrative variety of *actions*, never for spatial distribution — a category of check I hadn't thought to run at all until someone watching the actual game noticed the pattern with their own eyes.
+
+The cause, once measured: `World._travel_desirability()` (which decides whether an agent *wants* to travel) already factored in each location's `rest_bonus`/`social_bonus`/`boast_bonus`, but `UtilityScorer._opportunity_term()` (which scores actually *doing* Rest/Socialize/Boast once there) never checked those same fields — so Travel promised a location mattered, and then arriving delivered no actual scoring advantage over just staying at Meadow, where population density already maximized Socialize/Boast opportunity for free. Added the missing symmetry (`_opportunity_term` now reads the same bonus fields Travel already used) — Meadow dropped to 75%, better, but Grove stayed at 0%. Raising the new weight further made it *worse* (Meadow rose to 88.8%), which was the tell that this wasn't an undersized-incentive problem: `Socialize`'s feasibility required another agent already present, and nobody was ever at Grove to be present — a pure cold-start deadlock no scoring weight can solve, since a location can't bootstrap its only draw. Gave Socialize a solo fallback (quiet reflection, a smaller need restore, its own template line) so an agent can be first at an empty location without wasting the trip — moved Grove from 0% to effectively still 0% (1 sample in 4000), because the marginal solo payoff still couldn't compete with Meadow's crowd. The actual fix was upstream of all of this: `_TRAVEL_DESIRABILITY_SCALE`, dampened to 0.4 back when Travel-vs-staying oscillation was the problem (see above), was now the dominant constraint suppressing every location's pull uniformly — and the repetition penalty added since then is an independent anti-oscillation mechanism that made the original dampening redundant. Raised the scale to 1.0 (undamped) and re-verified no oscillation regression; the actual distribution: Meadow 44.7%, Market 26.1%, Den 18.9%, Grove 10.2%, River 0.1% (River's own bonuses are just the weakest of any location — a legitimate "minor location," not a deadlock).
+
+Four fixes to reach a spatial distribution that looks like a forest instead of a waiting room, and every one of them was invisible to text-only verification. The lesson isn't "read the prose" this time — I was doing that. It's that some properties (spatial distribution, aggregate resource flow) don't show up in any single line of narrative, only in the shape of many lines taken together, and no amount of reading individual sentences substitutes for actually measuring the aggregate. The user caught this by watching the game for thirty seconds; I'd been reading dozens of chronicle files without once tallying where anyone was.
+
+## Verification
+
+- `godot --headless --script res://tests/self_check.gd` — 1000 ticks (~40 sim days), asserts needs stay clamped 0–100, the forage pool never goes negative or over max, roster size stays constant and every agent's generation stays ≥1 through any deaths/successions, every location gets nonzero occupancy and no single location exceeds 60% of aggregate agent-time (the permanent version of the diagnostic that caught the clustering bug — see below), the chronicle produces ≥50 lines with ≥20 distinct, and ≥1 moral synthesizes. A second, targeted sub-check (`_check_forced_mortality`) drives the Die→Succeed path directly (bypassing the full tick loop, which lets a lucky Forage or a friend's Share undo a "forced" starvation before the mortality check ever reads it) and asserts the death and succession events both fire, roster size is preserved, generation increments, and the successor's inherited relationship is nonzero but diluted. Current run: 8000 lines, 250 distinct, 40 morals, 0 deaths over 1000 ticks (seed 12345) — green across all invariants including the occupancy bounds; forced-mortality sub-check green. Verified robust across 6 seeds (deaths range 0–11 per 40 days; occupancy bounds hold in all six).
+- A full ~28-day headless run of the actual scene (not just the test harness) with zero script/runtime errors, producing the `chronicles/day_NNN.md` files checked into the repo — 6 of the 28 days include a real death and succession.
+- A live run in the Godot editor via godot-mcp: confirmed the UI (pause/speed controls, day counter), the scrolling color-coded chronicle with auto-scroll, and agent movement between locations, and caught the location-label/agent-overlap issues fixed above.
+
+## What I'd change
+
+- **Needs/action balance is hand-tuned, not derived** — including, now, the mortality economy. `forage_regen = 11.0` was reverse-engineered from one specific equation (aggregate Hunger decay across the fixed 8-agent roster) to hit a target death rate I picked by feel ("a couple over 40 days feels right"). It works, and it's now at least *principled* hand-tuning rather than guessed, but I wouldn't trust the exact constant to hold if the roster size, decay rate, or action set changed — it would need re-deriving, not just reused.
+- **The moral-synthesis heuristic is two-signal now** (a death always wins; otherwise the largest relationship swing in the day) rather than one, but it's still a single day's window. It will miss slow-burn patterns — a lineage that's died out three times in a row, a rivalry that's been simmering for weeks without a single big spike — that a real "story sifting" system would catch by pattern-matching across the whole history, not just one day's events.
+- **Species are 1:1 with agents** (8 species, 8 agents, and successors keep their predecessor's species), which let event dicts use the species name as a de facto unique ID and kept `main.gd`'s agent-view lookup simple — a dead-and-replaced Fox reuses the same view slot as the old one, which is convenient but also means there's no way to have two Foxes at once, or for a species to actually go extinct. That assumption is baked into `main.gd::agent_views`, `Chronicle` dominant-trait attribution, and `World._succeed()`'s inheritance lookup.
+- **The closure-capture bug is a sharp edge in the language, not just my mistake** — I'd genuinely reach for `var found := false; connect(func(): found = true)` again without thinking, in any GDScript project, unless I specifically remember this session. Worth a standing note-to-self: primitives captured in GDScript lambdas don't mutate the outer scope; wrap anything a lambda needs to report back in a `Dictionary` or `Array`.
+- **The self-check originally had no spatial-distribution assertion** — that's exactly the gap that let the Meadow-clustering bug through three rounds of my own testing before the user caught it by watching the game. Now fixed (occupancy-spread bounds are a permanent assertion in `self_check.gd`), but the general shape of the gap is worth remembering for the next project: individual-line reading and individual-invariant assertions (needs, pool bounds) will never catch an *aggregate* property. If a system has an aggregate shape that matters — spatial spread, load balance, resource flow — it needs its own explicit measurement, not an inference from reading examples.
+
+## Natural next steps (not built)
+
+- More locations and actions — the architecture (plain data + `match`) scales to a few more of each without restructuring.
+- Real population dynamics: species going fully extinct, or a new species entering, rather than every death being same-species succession forever.
+- A richer moral-synthesis pass that looks across multiple days for slow patterns, not just one day's single biggest event or a death — e.g. a lineage-aware moral ("the third Fox in a row to die at the Market — some places are simply unlucky for foxes").

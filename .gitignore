@@ -1,0 +1,7 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# vendored dev-only tooling, not part of the project — install locally via
+# Project Settings > Plugins if you want live MCP editor inspection
+/addons/godot_mcp/
